@@ -1,11 +1,11 @@
 import 'package:dbus_secrets/dbus_secrets.dart';
 
-// This is an example of using the DBusSecrets class as an API
+// This is an example of using the simplified DBusSecrets class
 void main() async {
   print('Starting DBusSecrets API example');
 
   // Create an instance of DBusSecrets
-  final secrets = DBusSecrets(application: 'example_app');
+  final secrets = DBusSecrets(appName: 'example_app');
 
   // Initialize the connection to the D-Bus Secrets service
   if (await secrets.initialize()) {
