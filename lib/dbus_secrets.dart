@@ -12,7 +12,7 @@ class DBusSecrets {
   late DBusClient _client;
   late DBusObjectPath _session;
   late DBusObjectPath _collection;
-  String _appName;
+  final String _appName;
   bool _isUnlocked = false;
 
   // Constructor
@@ -35,7 +35,7 @@ class DBusSecrets {
   // Unlock the keyring
   Future<bool> unlock() async {
     try {
-      final result = await _client.callMethod(
+      await _client.callMethod(
         destination: _service,
         path: DBusObjectPath(_path),
         interface: 'org.freedesktop.Secret.Service',

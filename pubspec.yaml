@@ -1,12 +1,24 @@
 name: dbus_secrets
-description: A Dart package for managing secrets using D-Bus.
+description: A lightweight Dart package for securely storing and retrieving secrets using the Linux Secret Service API via D-Bus.
 version: 0.0.1
 repository: https://github.com/akshaybabloo/dbus_secrets
+homepage: https://github.com/akshaybabloo/dbus_secrets
+issue_tracker: https://github.com/akshaybabloo/dbus_secrets/issues
+
+keywords:
+  - dbus
+  - secrets
+  - keyring
+  - password
+  - security
+  - linux
 
 environment:
   sdk: ^3.7.2
 
-# Add regular dependencies here.
+platforms:
+  linux:
+
 dependencies:
   dbus: ^0.7.11
 
