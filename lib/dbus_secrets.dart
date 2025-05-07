@@ -75,10 +75,8 @@ class DBusSecrets {
       final signal = await completedStream.first;
       final dismissed = (signal.values[0] as DBusBoolean).value;
       if (dismissed) {
-        print("Unlock error: Prompt was dismissed by user.");
         return false;
       }
-      print("Unlock successful: Prompt was accepted by user.");
 
       _isUnlocked = true;
       return true;
