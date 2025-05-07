@@ -35,7 +35,7 @@ class DBusSecrets {
   // Unlock the keyring
   Future<bool> unlock() async {
     try {
-      await _client.callMethod(
+      var response = await _client.callMethod(
         destination: _service,
         path: DBusObjectPath(_path),
         interface: 'org.freedesktop.Secret.Service',
@@ -44,6 +44,39 @@ class DBusSecrets {
           DBusArray.objectPath([_collection]),
         ],
       );
+
+      // Check if the unlocking was successful
+      final objectPath = response.returnValues[1] as DBusObjectPath;
+      if (objectPath.value == "/") {
+        _isUnlocked = true;
+        return true;
+      }
+
+      // Create the listener to subscribe to the completed signal on the prompt
+      var promptRemote = DBusRemoteObject(_client, name: _service, path: objectPath);
+      var completedStream = DBusRemoteObjectSignalStream(
+        object: promptRemote,
+        interface: 'org.freedesktop.Secret.Prompt',
+        name: 'Completed',
+      );
+
+      // Wait a little bit to prevent a race condition between the subscription and the sending of the prompt call
+      Timer(Duration(milliseconds: 500), () {
+        _client.callMethod(
+          destination: _service,
+          path: objectPath,
+          interface: "org.freedesktop.Secret.Prompt",
+          name: "Prompt",
+          values: [DBusString('')],
+        );
+      });
+
+      // Wait for the completed signal
+      final signal = await completedStream.first;
+      final dismissed = (signal.values[0] as DBusBoolean).value;
+      if (dismissed) {
+        return false;
+      }
 
       _isUnlocked = true;
       return true;
