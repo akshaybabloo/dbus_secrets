@@ -11,10 +11,15 @@ void main() async {
   if (await secrets.initialize()) {
     print('Connected to D-Bus Secrets service');
 
+    // Read the collection state before unlocking it
+    print('\nCollection: ${await secrets.collectionLabel()}');
+    print('Locked: ${await secrets.isLocked()}');
+
     // Unlock the collection (required before any operations)
     print('\nUnlocking collection...');
     final unlockResult = await secrets.unlock();
     print('Unlock result: ${unlockResult ? 'Success' : 'Failed'}');
+    print('Locked: ${await secrets.isLocked()}');
 
     if (unlockResult) {
       // Example key and password
