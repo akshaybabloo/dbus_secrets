@@ -1,30 +1,41 @@
 import 'dart:async';
+
 import 'package:dbus/dbus.dart';
+
+import 'interfaces/secret_collection.dart';
+import 'interfaces/secret_item.dart';
+import 'interfaces/secret_prompt.dart';
+import 'interfaces/secret_service.dart';
+import 'interfaces/secret_session.dart';
 
 /// A simplified class for interacting with the Linux Keyring via D-Bus
 class DBusSecrets {
   // Basic D-Bus constants
-  static const String _service = 'org.freedesktop.secrets';
-  static const String _path = '/org/freedesktop/secrets';
+  static const String _destination = 'org.freedesktop.secrets';
   static const String _defaultCollection = '/org/freedesktop/secrets/aliases/default';
 
   // Instance variables
   late DBusClient _client;
-  late DBusObjectPath _session;
-  late DBusObjectPath _collection;
+  late SecretService _service;
+  late SecretCollection _collection;
+  late SecretSession _session;
   final String _appName;
   bool _isUnlocked = false;
 
   // Constructor
-  DBusSecrets({String appName = 'my_app'}) : _appName = appName {
-    _collection = DBusObjectPath(_defaultCollection);
-  }
+  DBusSecrets({String appName = 'my_app'}) : _appName = appName;
 
   // Initialize connection
   Future<bool> initialize() async {
     try {
       _client = DBusClient.session();
-      _session = await _openSession();
+      _service = SecretService(_client, _destination);
+      _collection = SecretCollection(_client, _destination, DBusObjectPath(_defaultCollection));
+
+      // Open a session, the secrets are exchanged in plain text over the session bus
+      final (_, sessionPath) = await _service.callOpenSession('plain', DBusString(''));
+      _session = SecretSession(_client, _destination, sessionPath);
+
       return true;
     } catch (e) {
       print('Connection error: $e');
@@ -35,46 +46,24 @@ class DBusSecrets {
   // Unlock the keyring
   Future<bool> unlock() async {
     try {
-      var response = await _client.callMethod(
-        destination: _service,
-        path: DBusObjectPath(_path),
-        interface: 'org.freedesktop.Secret.Service',
-        name: 'Unlock',
-        values: [
-          DBusArray.objectPath([_collection]),
-        ],
-      );
+      final (_, promptPath) = await _service.callUnlock([_collection.path]);
 
-      // Check if the unlocking was successful
-      final objectPath = response.returnValues[1] as DBusObjectPath;
-      if (objectPath.value == "/") {
+      // A prompt path of "/" means no prompt is needed, the collection is already unlocked
+      if (promptPath.value == '/') {
         _isUnlocked = true;
         return true;
       }
 
-      // Create the listener to subscribe to the completed signal on the prompt
-      var promptRemote = DBusRemoteObject(_client, name: _service, path: objectPath);
-      var completedStream = DBusRemoteObjectSignalStream(
-        object: promptRemote,
-        interface: 'org.freedesktop.Secret.Prompt',
-        name: 'Completed',
-      );
+      // Subscribe to the completed signal before the prompt is shown
+      final prompt = SecretPrompt(_client, _destination, promptPath);
+      final completed = prompt.completed.first;
 
       // Wait a little bit to prevent a race condition between the subscription and the sending of the prompt call
-      Timer(Duration(milliseconds: 500), () {
-        _client.callMethod(
-          destination: _service,
-          path: objectPath,
-          interface: "org.freedesktop.Secret.Prompt",
-          name: "Prompt",
-          values: [DBusString('')],
-        );
-      });
+      Timer(Duration(milliseconds: 500), () => prompt.callPrompt(''));
 
       // Wait for the completed signal
-      final signal = await completedStream.first;
-      final dismissed = (signal.values[0] as DBusBoolean).value;
-      if (dismissed) {
+      final result = await completed;
+      if (result.dismissed) {
         return false;
       }
 
@@ -96,27 +85,21 @@ class DBusSecrets {
       final replace = existingItem != null;
 
       // Create properties
-      final properties = {
+      final properties = <String, DBusValue>{
         'org.freedesktop.Secret.Item.Label': DBusString(key),
-        'org.freedesktop.Secret.Item.Attributes': _createAttributes(key),
+        'org.freedesktop.Secret.Item.Attributes': _attributesValue(key),
       };
 
       // Create secret
-      final secret = DBusStruct([
-        _session,
+      final secret = <DBusValue>[
+        _session.path,
         DBusArray.byte([]),
         DBusArray.byte(value.codeUnits),
         DBusString('text/plain; charset=utf8'),
-      ]);
+      ];
 
       // Save the secret
-      await _client.callMethod(
-        destination: _service,
-        path: _collection,
-        interface: 'org.freedesktop.Secret.Collection',
-        name: 'CreateItem',
-        values: [DBusDict.stringVariant(properties), secret, DBusBoolean(replace)],
-      );
+      await _collection.callCreateItem(properties, secret, replace);
 
       return true;
     } catch (e) {
@@ -131,23 +114,15 @@ class DBusSecrets {
 
     try {
       // Find the item
-      final item = await _findItem(key);
-      if (item == null) return null;
+      final itemPath = await _findItem(key);
+      if (itemPath == null) return null;
 
       // Get the secret value
-      final result = await _client.callMethod(
-        destination: _service,
-        path: item,
-        interface: 'org.freedesktop.Secret.Item',
-        name: 'GetSecret',
-        values: [_session],
-      );
+      final item = SecretItem(_client, _destination, itemPath);
+      final secret = await item.callGetSecret(_session.path);
 
-      // Extract the value
-      final secret = result.values[0] as DBusStruct;
-      final value = (secret.children[2] as DBusArray).children.map((c) => (c as DBusByte).value).toList();
-
-      return String.fromCharCodes(value);
+      // Extract the value, the struct is (session, parameters, value, content type)
+      return String.fromCharCodes(secret[2].asByteArray());
     } catch (e) {
       print('Get error: $e');
       return null;
@@ -160,17 +135,11 @@ class DBusSecrets {
 
     try {
       // Find the item
-      final item = await _findItem(key);
-      if (item == null) return false;
+      final itemPath = await _findItem(key);
+      if (itemPath == null) return false;
 
       // Delete the item
-      await _client.callMethod(
-        destination: _service,
-        path: item,
-        interface: 'org.freedesktop.Secret.Item',
-        name: 'Delete',
-        values: [],
-      );
+      await SecretItem(_client, _destination, itemPath).callDelete();
 
       return true;
     } catch (e) {
@@ -179,55 +148,34 @@ class DBusSecrets {
     }
   }
 
+  // Whether the default collection is currently locked
+  Future<bool> isLocked() => _collection.getLocked();
+
+  // The label of the default collection, for example "Login"
+  Future<String> collectionLabel() => _collection.getLabel();
+
   // Close the connection
   Future<void> close() async {
     try {
-      await _client.callMethod(
-        destination: _service,
-        path: _session,
-        interface: 'org.freedesktop.Secret.Session',
-        name: 'Close',
-        values: [],
-      );
+      await _session.callClose();
     } finally {
-      _client.close();
+      await _client.close();
     }
-  }
-
-  // Helper: Open a session
-  Future<DBusObjectPath> _openSession() async {
-    final result = await _client.callMethod(
-      destination: _service,
-      path: DBusObjectPath(_path),
-      interface: 'org.freedesktop.Secret.Service',
-      name: 'OpenSession',
-      values: [DBusString('plain'), DBusVariant(DBusString(''))],
-    );
-
-    return result.values[1] as DBusObjectPath;
   }
 
   // Helper: Find an item by key
   Future<DBusObjectPath?> _findItem(String key) async {
-    final result = await _client.callMethod(
-      destination: _service,
-      path: _collection,
-      interface: 'org.freedesktop.Secret.Collection',
-      name: 'SearchItems',
-      values: [_createAttributes(key)],
-    );
+    final items = await _collection.callSearchItems(_attributes(key));
 
-    final items = (result.values[0] as DBusArray).children.map((c) => c as DBusObjectPath).toList();
-
-    return items.isEmpty ? null : items[0];
+    return items.isEmpty ? null : items.first;
   }
 
-  // Helper: Create attributes dictionary
-  DBusDict _createAttributes(String key) {
-    final attributes = {'Application': _appName, 'Id': key};
+  // Helper: Create the attributes an item is stored and searched with
+  Map<String, String> _attributes(String key) => {'Application': _appName, 'Id': key};
 
-    final map = <DBusValue, DBusValue>{};
-    attributes.forEach((k, v) => map[DBusString(k)] = DBusString(v));
+  // Helper: The same attributes as a D-Bus dictionary, for the item properties
+  DBusDict _attributesValue(String key) {
+    final map = _attributes(key).map((k, v) => MapEntry(DBusString(k), DBusString(v)));
 
     return DBusDict(DBusSignature('s'), DBusSignature('s'), map);
   }
